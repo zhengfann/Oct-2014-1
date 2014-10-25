@@ -63,7 +63,7 @@ implicit none
 
     call getarg(7,output_file)                          ! 7. output filename
 
-    output_file2=trim(output_file)//'A_2'
+    output_file2=trim(output_file)//'A_2.cube'
 
     !! read rho charge
     call read_dgrid_cube(rho_file,rho_charge)
