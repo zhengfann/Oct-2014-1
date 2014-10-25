@@ -1,16 +1,12 @@
 program quantum_pressure 
 implicit none
 
-    ! command ./qp.x input_1 input_2 input_3 outputname equation_type
-    ! input_1.        :  density file
-    ! input_2.        :  kinetic energy density file
-    ! input_3.        :  Weiszacker density file / laplacian charge density file
-    ! outputname_4.   :  output filename
-    ! equation_type_5.:  which equation to be calculated
+    ! all the unit is atomic unit
 
     integer, parameter                          :: dp=kind(1.0d0)
     real,parameter                              :: pi=3.14159265358979
     real,parameter                              :: eq=1d-7
+    real,parameter                              :: c0=137.0359996287515
 
     type atoms
       integer                                   :: neu
@@ -33,33 +29,41 @@ implicit none
     type(charge_grid)                           :: tw_charge
     type(charge_grid)                           :: p_charge
     type(charge_grid)                           :: j_charge
-    type(charge_grid)                           :: current_charge
+    type(charge_grid)                           :: current_charge_x, current_charge_y, current_charge_z
+    type(charge_grid)                           :: a_charge_x, a_charge_y, a_charge_z
+    type(charge_grid)                           :: a2_charge
     type(charge_grid)                           :: lap_r_charge
     type(charge_grid)                           :: reduced_lap_charge
     type(charge_grid)                           :: prox_charge
 
-    character(len=256)                          :: rho_file,t_file,tw_file, lap_file, j_file, output_file, arg_tmp, version
+    character(len=256)                          :: rho_file,t_file,tw_file,lap_file,j_file,output_file,output_file2,arg_tmp,version
+    character(len=256)                          :: c1_file, c2_file, c3_file
     real(dp),dimension(:,:,:),allocatable       :: tf
 
 
-    real(dp)                                    :: lap_coeff=1d0/4d0
+    real(dp)                                    :: lap_coeff=1d0/4d0, mag_field
     integer                                     :: narg, equ
 
-    version = '1.1.10.tmp'
+    version = 'Oct_2014-1'
     write(6,*) 'VERSION = ' , version
 
     narg =iargc()
-    call getarg(1,rho_file)                                           ! 1. density file
-    call getarg(2,t_file)                                             ! 2. kinetic energy density file
-    call getarg(3,tw_file)                                            ! 3. Weiszacker density file / laplacian charge density file
-    call getarg(4,lap_file)                                           ! 4. Weiszacker density file / laplacian charge density file
-    call getarg(5,output_file)                                        ! 5. output filename
-    call getarg(6,arg_tmp); read(arg_tmp,*)equ                        ! 6. which equation to be calculated
-    if (equ==4  ) call getarg(7,arg_tmp); read(arg_tmp,*)lap_coeff    ! 7. for equ=4   calc, read in lap_coefficient in equation 4 (version 5)
-    if (equ==42 ) call getarg(7,arg_tmp); read(arg_tmp,*)lap_coeff    ! 7. for equ=42  calc, set t^{TF} in equ4 0 (version 5)
-    if (equ==49 ) call getarg(7,j_file)                               ! 7. for equ=49  calc, include paramagnetic current in equ4 (version 5)
-    if (equ==79 ) call getarg(7,j_file)                               ! 7. for equ=79  calc, include paramagnetic current in equ7 (version 4)
-    if (equ==491) call getarg(7,j_file)                               ! 7. for equ=4   calc, test the magnetic current in equ4  (version 5)
+
+    call getarg(1,rho_file)                             ! 1. density file
+
+    call getarg(2,t_file)                               ! 2. energy density file (-5/6*(tao-tao^tf)+|grad n|**2/(48*n)
+
+    call getarg(3,c1_file)                              ! 3. paramagnetic current file x 
+
+    call getarg(4,c2_file)                              ! 3. paramagnetic current file y 
+
+    call getarg(5,c3_file)                              ! 3. paramagnetic current file z 
+
+    call getarg(6,arg_tmp); read(arg_tmp,*)mag_field    ! 6. Magnetic field strength (a.u.)
+
+    call getarg(7,output_file)                          ! 7. output filename
+
+    output_file2=trim(output_file)//'A_2'
 
     !! read rho charge
     call read_dgrid_cube(rho_file,rho_charge)
@@ -67,188 +71,26 @@ implicit none
     !! read t charge
     call read_dgrid_cube(t_file,t_charge)
 
-    !! Equation 7
-    if (equ == 7) then
+    !! read current density
+    call read_dgrid_cube(c1_file,current_charge_x)
+    call read_dgrid_cube(c2_file,current_charge_y)
+    call read_dgrid_cube(c3_file,current_charge_z)
 
-        !! read tw charge
-        call read_dgrid_cube(tw_file,tw_charge)
+    !! calculate A (vector potential)
+    call calc_vector_potential(mag_field,a_charge_x,a_charge_y,a_charge_z,rho_charge)
 
-        !! compute p^{kq}
-        call calc_p_charge(rho_charge,t_charge,tw_charge,current_charge,p_charge,tf)
-    
-        !! computer p^{k}/p^{TF}   equ 7 of version 4
-        call pk_charge(p_charge,tf,-1d0,1d0)
+    !! estimate weak field term
+    call calc_vector_square(a_charge_x,a_charge_y,a_charge_z,rho_charge,a2_charge)
 
-        !! write to cube
-        call write_cube(output_file,p_charge)
+    !! write cube file
+    call write_cube(output_file2,a2_charge)
 
-    !! Equation 7 with test of current density
-    else if (equ == 79) then
+    !! calculate p^kq with normalization
+    call calc_pkq_oct_14_v1(rho_charge,t_charge,a_charge_x,a_charge_y,a_charge_z,                   &
+                            current_charge_x,current_charge_y,current_charge_z,p_charge)
 
-        !! read tw charge
-        call read_dgrid_cube(tw_file,tw_charge)
-    
-        !! read current density scale charge 
-        call read_dgrid_cube(j_file,j_charge)
-    
-        !! compute p^{kq} with current density
-        call calc_p_charge(rho_charge,t_charge,tw_charge,j_charge,p_charge,tf)
-    
-        !! computer p^{k}/p^{TF}   equ 7 of version 4
-        call pk_charge(p_charge,tf,-1d0,1d0)
-
-        !! write to cube
-        call write_cube(output_file,p_charge)
-
-    !! Equation 4
-    else if (equ == 4) then
-
-        !! read laplacian charge 
-        call read_dgrid_cube(lap_file,lap_r_charge)
-
-        !! compute p^{q}  equ 4 of version 5
-        call pq_charge(p_charge,lap_r_charge,t_charge,rho_charge,tf,lap_coeff)
-
-        !! computer p^{q}/p^{TF}   equ 5 of version 5
-        call pk_charge(p_charge,tf,-1d0,1d0)
-
-        !! write to cube
-        call write_cube(output_file,p_charge)
-
-    !! Equation 4 with test of not including t^{TF} in equ 4
-    else if (equ == 42) then
-
-        !! read laplacian charge 
-        call read_dgrid_cube(lap_file,lap_r_charge)
-
-        !! compute p^{q}  equ 4 of version 5
-        call pq_charge_exempt_tf(p_charge,lap_r_charge,t_charge,rho_charge,tf,lap_coeff)
-
-        !! computer p^{q}/p^{TF}   equ 5 of version 5
-        call pk_charge(p_charge,tf,-1d0,1d0)
-
-        !! write to cube
-        call write_cube(output_file,p_charge)
-
-    !! Equation 4 with laplacian test
-    else if (equ == 41) then
-
-        !! read laplacian charge 
-        call read_dgrid_cube(lap_file,lap_r_charge)
-
-        !! compute p^{q}  equ 4 of version 5
-        call pq_charge(p_charge,lap_r_charge,t_charge,rho_charge,tf,lap_coeff)
-
-        !  compute reduced laplacian density
-        call comp_reduced_lap(reduced_lap_charge,lap_r_charge,tf)
-
-        !  write reduced_lap 
-        call write_radial(lap_r_charge,tf,-1d0,0d0,10,1d0)
-
-        !! write to cube
-        call write_cube(output_file,reduced_lap_charge)
-
-        !! computer p^{q}/p^{TF}   equ 5 of version 5
-        call pk_charge(p_charge,tf,-1d0,1d0)
-
-        !! write to cube
-        call write_cube(output_file,p_charge)
-
-    !! Equation 4 with magnetic field induced current
-    else if (equ == 49) then
-
-        !! read laplacian charge 
-        call read_dgrid_cube(lap_file,lap_r_charge)
-
-        !! read current density scale charge 
-        call read_dgrid_cube(j_file,j_charge)
-
-        !! compute p^{q}  equ 4 of version 5
-        call pq_charge_current(p_charge,lap_r_charge,t_charge,rho_charge,j_charge,tf,lap_coeff)
-
-        !! computer p^{q}/p^{TF}   equ 5 of version 5
-        call pk_charge(p_charge,tf,-1d0,1d0)
-
-        !! write to cube
-        call write_cube(output_file,p_charge)
-
-    !! test equ == 49
-    else if (equ == 491) then
-
-        !! read current density scale charge 
-        call read_dgrid_cube(j_file,j_charge)
-
-        !! compute |j|^2/rho
-        call comp_j2_rho(rho_charge, j_charge, p_charge)
-
-        !! write to cube
-        call write_cube(output_file,p_charge)
-
-    !! kinetic energy expansion test
-    else if (equ == -1) then
-
-        !! read tw charge
-        call read_dgrid_cube(tw_file,tw_charge)
-
-        !! read laplacian charge 
-        call read_dgrid_cube(lap_file,lap_r_charge)
-
-
-        call comp_approx(prox_charge,rho_charge,tw_charge,lap_r_charge)
-
-
-        call comp_diff(p_charge,t_charge,prox_charge)
-
-    !! atom radial 
-    else if (equ == -5) then
-
-        !! read tw charge
-        call read_dgrid_cube(tw_file,tw_charge)
-
-        !! read laplacian charge 
-        call read_dgrid_cube(lap_file,lap_r_charge)
-
-
-        call pq_charge(p_charge,lap_r_charge,t_charge,rho_charge,tf,lap_coeff)
-
-
-        call write_radial(p_charge,tf,-1d0,0d0,50,1d0)
-
-
-        call comp_reduced_lap(reduced_lap_charge,lap_r_charge,tf)
-
-
-        call write_radial(lap_r_charge,tf,-1d0,0d0,10,-0.25d0)
-
-
-        call write_radial(t_charge,tf,-1d0,0d0,20,2d0/3d0)
-
-
-    !   call write_radial_2charge(rho_charge,t_charge%density,lap_r_charge%density,tf,-1d0,0d0,30,2d0/3d0,-0.25d0)
-
-
-    !   call write_bare_radial(rho_charge,lap_r_charge%density,-1d0,0d0,40,-0.25d0)
-
-
-    !   call write_bare_radial(rho_charge,t_charge%density,-1d0,0d0,44,2d0/3d0)
-
-
-    !   call write_bare_radial(rho_charge,tf,-1d0,0d0,47,2d0/3d0)
-
-
-        call write_bare_radial(rho_charge,reduced_lap_charge%density,-1d0,0d0,70,1d0)
-
-
-        !! approximate
-        call calc_p_charge(rho_charge,t_charge,tw_charge,current_charge,p_charge,tf)
-
-
-        call write_radial(p_charge,tf,-1d0,0d0,66,1d0)
-
-    end if
-   
-    !!
-    !!
+    !! write cube file
+    call write_cube(output_file,p_charge)
 
     !! finish
     write(6,*) 'Finished!'
@@ -257,36 +99,11 @@ implicit none
     !
     !
     !
-    ! ** rho_charge: charge density
-    ! ** t_charge: kinetic energy density
-    ! ** tf : Thomas fermi  kinetic energy density
-    ! ** pk_charge: equation 7 (version 4)
-    ! ** pq_charge: equation 4 (version 5)
-    !
-    ! *************************************************
-    ! ** memory usage ~ charges file * 4
-    ! ** if limited by memory (reduce to charge file *2)
-    ! ** read argvs
-    ! 
-    ! call read_dgrid_cube(rho_file,rho_charge)
-    ! head=copy_cube_head(rho_charge)
-    ! allocate(tf(size(rho_charge%density(1)),size(rho_charge%density(1)),size(rho_charge%density(1))))
-    ! tf=3d0/10d0*(3d0*pi**2)**(2d0/3d0)*rho_charge%density**(5d0/3d0)
-    ! call deallo_charge(rho_charge)
-    ! call read_dgrid_cube(t_file,t_charge)
-    ! tf=t_charge%density-tf
-    ! call deallo_charge(t_charge)
-    ! call read_dgrid_cube(tw_file,tw_charge)
-    ! tf=1d0/6d0*tw_charge%density-5d0/6d0*tf
-    ! call deallo_charge(tw_charge)
-    ! write_cube(filaname,head)
-    ! write_cube(filaname,tf)
-    !
-    ! ************************************************
     !
     !
-    !
-    !
+
+
+
 contains 
 
 
@@ -428,66 +245,66 @@ contains
 
 
 
-    SUBROUTINE write_radial_2charge(p_charge,charge_1,charge_2,tf,zero_proc,one,uni,scale_factor1,scale_factor2)
-        type(charge_grid),intent(inout)                      :: p_charge
-        real(dp),dimension(:,:,:)                            :: charge_1, charge_2
-        real(dp),dimension(:, :, :)                          :: tf
-        real(dp),intent(in)                                  :: zero_proc
-        real(dp),intent(in)                                  :: one
-        real(dp),intent(in)                                  :: scale_factor1, scale_factor2
-        integer,intent(in)                                   :: uni
+!   SUBROUTINE write_radial_2charge(p_charge,charge_1,charge_2,tf,zero_proc,one,uni,scale_factor1,scale_factor2)
+!       type(charge_grid),intent(inout)                      :: p_charge
+!       real(dp),dimension(:,:,:)                            :: charge_1, charge_2
+!       real(dp),dimension(:, :, :)                          :: tf
+!       real(dp),intent(in)                                  :: zero_proc
+!       real(dp),intent(in)                                  :: one
+!       real(dp),intent(in)                                  :: scale_factor1, scale_factor2
+!       integer,intent(in)                                   :: uni
 
-        real(dp),dimension(:),allocatable                    :: radial_r
-        real(dp),dimension(size(tf,1),size(tf,2),size(tf,3)) :: distance, charge_3, tf_tmp
-        integer                                              :: i, j, k, length
-        integer,dimension(3)                                 :: center
-        real(dp)                                             :: eq_tmp
+!       real(dp),dimension(:),allocatable                    :: radial_r
+!       real(dp),dimension(size(tf,1),size(tf,2),size(tf,3)) :: distance, charge_3, tf_tmp
+!       integer                                              :: i, j, k, length
+!       integer,dimension(3)                                 :: center
+!       real(dp)                                             :: eq_tmp
 
-        distance=0d0
-        tf_tmp=tf*2d0/3d0
-        charge_3=charge_1*scale_factor1+charge_2*scale_factor1
-        eq_tmp=eq**(5d0/3d0)*3d0/10d0*(3d0*pi**2)**(2d0/3d0)
-        center=find_center(p_charge%grid, p_charge%spaces)
-        length=minval( p_charge%grid-center )-2
-        if (allocated(radial_r)) deallocate(radial_r)
-        allocate( radial_r(length+1) )
+!       distance=0d0
+!       tf_tmp=tf*2d0/3d0
+!       charge_3=charge_1*scale_factor1+charge_2*scale_factor1
+!       eq_tmp=eq**(5d0/3d0)*3d0/10d0*(3d0*pi**2)**(2d0/3d0)
+!       center=find_center(p_charge%grid, p_charge%spaces)
+!       length=minval( p_charge%grid-center )-2
+!       if (allocated(radial_r)) deallocate(radial_r)
+!       allocate( radial_r(length+1) )
 
-        forall(i=1:p_charge%grid(1),j=1:p_charge%grid(2),k=1:p_charge%grid(3))    &
-                      distance(i,j,k)= ((i-center(1))*p_charge%spaces(1,1))**2   +&
-                                       ((j-center(2))*p_charge%spaces(2,2))**2   +&
-                                       ((k-center(3))*p_charge%spaces(3,3))**2
-        ! along first vector, orthom box
-        j=1
-        do i=center(2),center(2)+length
-            if (abs(tf(center(1),i,center(3))) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
-            if (abs(tf(center(1),i,center(3))) >=eq_tmp*2d0/3d0) radial_r(j)=one+charge_3(center(1),i,center(3))/tf_tmp(center(1),i,center(3))/sqrt(1d0+(charge_3(center(1),i,center(3))/tf_tmp(center(1),i,center(3)))**2)
-            j=j+1
-        end do
+!       forall(i=1:p_charge%grid(1),j=1:p_charge%grid(2),k=1:p_charge%grid(3))    &
+!                     distance(i,j,k)= ((i-center(1))*p_charge%spaces(1,1))**2   +&
+!                                      ((j-center(2))*p_charge%spaces(2,2))**2   +&
+!                                      ((k-center(3))*p_charge%spaces(3,3))**2
+!       ! along first vector, orthom box
+!       j=1
+!       do i=center(2),center(2)+length
+!           if (abs(tf(center(1),i,center(3))) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
+!           if (abs(tf(center(1),i,center(3))) >=eq_tmp*2d0/3d0) radial_r(j)=one+charge_3(center(1),i,center(3))/tf_tmp(center(1),i,center(3))/sqrt(1d0+(charge_3(center(1),i,center(3))/tf_tmp(center(1),i,center(3)))**2)
+!           j=j+1
+!       end do
 
-        write(uni,'(2E30.12)') (sqrt(distance(center(1),i,center(3))), radial_r(i-center(2)+1), i=center(2),center(2)+length)
+!       write(uni,'(2E30.12)') (sqrt(distance(center(1),i,center(3))), radial_r(i-center(2)+1), i=center(2),center(2)+length)
 
-        ! along ab
-        j=1
-        do i=center(1),center(1)+length
-            if (abs(tf(i,i,center(3))) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
-            if (abs(tf(i,i,center(3))) >=eq_tmp*2d0/3d0) radial_r(j)=one+charge_3(i,i,center(3))/tf_tmp(i,i,center(3))/sqrt(1d0+(charge_3(i,i,center(3))/tf_tmp(i,i,center(3)))**2)
-            j=j+1
-        end do
+!       ! along ab
+!       j=1
+!       do i=center(1),center(1)+length
+!           if (abs(tf(i,i,center(3))) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
+!           if (abs(tf(i,i,center(3))) >=eq_tmp*2d0/3d0) radial_r(j)=one+charge_3(i,i,center(3))/tf_tmp(i,i,center(3))/sqrt(1d0+(charge_3(i,i,center(3))/tf_tmp(i,i,center(3)))**2)
+!           j=j+1
+!       end do
 
-        write(uni+1,'(2E30.12)') (sqrt(distance(i,i,center(3))), radial_r(i-center(1)+1), i=center(1),center(1)+length)
+!       write(uni+1,'(2E30.12)') (sqrt(distance(i,i,center(3))), radial_r(i-center(1)+1), i=center(1),center(1)+length)
 
-        ! along abc
-        j=1
-        do i=center(1),center(1)+length
-            if (abs(tf(i,i,i)) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
-            if (abs(tf(i,i,i)) >=eq_tmp*2d0/3d0) radial_r(j)=one+charge_3(i,i,i)/tf_tmp(i,i,i)/sqrt(1d0+(charge_3(i,i,i)/tf_tmp(i,i,i))**2)
-            j=j+1
-        end do
+!       ! along abc
+!       j=1
+!       do i=center(1),center(1)+length
+!           if (abs(tf(i,i,i)) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
+!           if (abs(tf(i,i,i)) >=eq_tmp*2d0/3d0) radial_r(j)=one+charge_3(i,i,i)/tf_tmp(i,i,i)/sqrt(1d0+(charge_3(i,i,i)/tf_tmp(i,i,i))**2)
+!           j=j+1
+!       end do
 
-        write(uni+2,'(2E30.12)') (sqrt(distance(i,i,i)), radial_r(i-center(1)+1), i=center(1),center(1)+length)
+!       write(uni+2,'(2E30.12)') (sqrt(distance(i,i,i)), radial_r(i-center(1)+1), i=center(1),center(1)+length)
 
 
-    end SUBROUTINE
+!   end SUBROUTINE
 
 
 
@@ -552,64 +369,64 @@ contains
 
 
 
-    SUBROUTINE write_radial(p_charge,tf,zero_proc,one,uni,scale_factor)
-        type(charge_grid),intent(inout)                      :: p_charge
-        real(dp),dimension(:, :, :)                          :: tf
-        real(dp),intent(in)                                  :: zero_proc
-        real(dp),intent(in)                                  :: one
-        real(dp),intent(in)                                  :: scale_factor
-        integer,intent(in)                                   :: uni
+!   SUBROUTINE write_radial(p_charge,tf,zero_proc,one,uni,scale_factor)
+!       type(charge_grid),intent(inout)                      :: p_charge
+!       real(dp),dimension(:, :, :)                          :: tf
+!       real(dp),intent(in)                                  :: zero_proc
+!       real(dp),intent(in)                                  :: one
+!       real(dp),intent(in)                                  :: scale_factor
+!       integer,intent(in)                                   :: uni
 
-        real(dp),dimension(:),allocatable                    :: radial_r
-        real(dp),dimension(size(tf,1),size(tf,2),size(tf,3)) :: distance
-        integer                                              :: i, j, k, length
-        integer,dimension(3)                                 :: center
-        real(dp)                                             :: eq_tmp
+!       real(dp),dimension(:),allocatable                    :: radial_r
+!       real(dp),dimension(size(tf,1),size(tf,2),size(tf,3)) :: distance
+!       integer                                              :: i, j, k, length
+!       integer,dimension(3)                                 :: center
+!       real(dp)                                             :: eq_tmp
 
-        distance=0d0
-        p_charge%density=p_charge%density*scale_factor
-        eq_tmp=eq**(5d0/3d0)*3d0/10d0*(3d0*pi**2)**(2d0/3d0)
-        center=find_center(p_charge%grid, p_charge%spaces)
-        length=minval( p_charge%grid-center )-2
-        if (allocated(radial_r)) deallocate(radial_r)
-        allocate( radial_r(length+1) )
+!       distance=0d0
+!       p_charge%density=p_charge%density*scale_factor
+!       eq_tmp=eq**(5d0/3d0)*3d0/10d0*(3d0*pi**2)**(2d0/3d0)
+!       center=find_center(p_charge%grid, p_charge%spaces)
+!       length=minval( p_charge%grid-center )-2
+!       if (allocated(radial_r)) deallocate(radial_r)
+!       allocate( radial_r(length+1) )
 
-        forall(i=1:p_charge%grid(1),j=1:p_charge%grid(2),k=1:p_charge%grid(3))    &
-                      distance(i,j,k)= ((i-center(1))*p_charge%spaces(1,1))**2   +&
-                                       ((j-center(2))*p_charge%spaces(2,2))**2   +&
-                                       ((k-center(3))*p_charge%spaces(3,3))**2
-        ! along first vector, orthom box
-        j=1
-        do i=center(2),center(2)+length
-            if (abs(tf(center(1),i,center(3))) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
-            if (abs(tf(center(1),i,center(3))) >=eq_tmp*2d0/3d0) radial_r(j)=one+p_charge%density(center(1),i,center(3))/(2d0/3d0*tf(center(1),i,center(3)))/sqrt(1d0+(p_charge%density(center(1),i,center(3))/(2d0/3d0*tf(center(1),i,center(3))))**2)
-            j=j+1
-        end do
+!       forall(i=1:p_charge%grid(1),j=1:p_charge%grid(2),k=1:p_charge%grid(3))    &
+!                     distance(i,j,k)= ((i-center(1))*p_charge%spaces(1,1))**2   +&
+!                                      ((j-center(2))*p_charge%spaces(2,2))**2   +&
+!                                      ((k-center(3))*p_charge%spaces(3,3))**2
+!       ! along first vector, orthom box
+!       j=1
+!       do i=center(2),center(2)+length
+!           if (abs(tf(center(1),i,center(3))) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
+!           if (abs(tf(center(1),i,center(3))) >=eq_tmp*2d0/3d0) radial_r(j)=one+p_charge%density(center(1),i,center(3))/(2d0/3d0*tf(center(1),i,center(3)))/sqrt(1d0+(p_charge%density(center(1),i,center(3))/(2d0/3d0*tf(center(1),i,center(3))))**2)
+!           j=j+1
+!       end do
 
-        write(uni,'(2E30.12)') (sqrt(distance(center(1),i,center(3))), radial_r(i-center(2)+1), i=center(2),center(2)+length)
+!       write(uni,'(2E30.12)') (sqrt(distance(center(1),i,center(3))), radial_r(i-center(2)+1), i=center(2),center(2)+length)
 
-        ! along ab
-        j=1
-        do i=center(1),center(1)+length
-            if (abs(tf(i,i,center(3))) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
-            if (abs(tf(i,i,center(3))) >=eq_tmp*2d0/3d0) radial_r(j)=one+p_charge%density(i,i,center(3))/(2d0/3d0*tf(i,i,center(3)))/sqrt(1d0+(p_charge%density(i,i,center(3))/(2d0/3d0*tf(i,i,center(3))))**2)
-            j=j+1
-        end do
+!       ! along ab
+!       j=1
+!       do i=center(1),center(1)+length
+!           if (abs(tf(i,i,center(3))) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
+!           if (abs(tf(i,i,center(3))) >=eq_tmp*2d0/3d0) radial_r(j)=one+p_charge%density(i,i,center(3))/(2d0/3d0*tf(i,i,center(3)))/sqrt(1d0+(p_charge%density(i,i,center(3))/(2d0/3d0*tf(i,i,center(3))))**2)
+!           j=j+1
+!       end do
 
-        write(uni+1,'(2E30.12)') (sqrt(distance(i,i,center(3))), radial_r(i-center(1)+1), i=center(1),center(1)+length)
+!       write(uni+1,'(2E30.12)') (sqrt(distance(i,i,center(3))), radial_r(i-center(1)+1), i=center(1),center(1)+length)
 
-        ! along abc
-        j=1
-        do i=center(1),center(1)+length
-            if (abs(tf(i,i,i)) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
-            if (abs(tf(i,i,i)) >=eq_tmp*2d0/3d0) radial_r(j)=one+p_charge%density(i,i,i)/(2d0/3d0*tf(i,i,i))/sqrt(1d0+(p_charge%density(i,i,i)/(2d0/3d0*tf(i,i,i)))**2)
-            j=j+1
-        end do
+!       ! along abc
+!       j=1
+!       do i=center(1),center(1)+length
+!           if (abs(tf(i,i,i)) < eq_tmp*2d0/3d0) radial_r(j)=one+zero_proc/sqrt(1d0+zero_proc**2)
+!           if (abs(tf(i,i,i)) >=eq_tmp*2d0/3d0) radial_r(j)=one+p_charge%density(i,i,i)/(2d0/3d0*tf(i,i,i))/sqrt(1d0+(p_charge%density(i,i,i)/(2d0/3d0*tf(i,i,i)))**2)
+!           j=j+1
+!       end do
 
-        write(uni+2,'(2E30.12)') (sqrt(distance(i,i,i)), radial_r(i-center(1)+1), i=center(1),center(1)+length)
+!       write(uni+2,'(2E30.12)') (sqrt(distance(i,i,i)), radial_r(i-center(1)+1), i=center(1),center(1)+length)
 
 
-    end SUBROUTINE
+!   end SUBROUTINE
 
 
 
@@ -759,6 +576,150 @@ contains
      !  if (allocated(lap_charge%density)) call deallo_charge(lap_charge)
 
     end SUBROUTINE
+
+
+
+
+    SUBROUTINE calc_pkq_oct_14_v1(rho_charge,t_charge,a_x,a_y,a_z,j_x,j_y,j_z,p_charge)
+        type(charge_grid),intent(inout)                      :: rho_charge
+        type(charge_grid),intent(inout)                      :: t_charge
+        type(charge_grid),intent(inout)                      :: a_x, a_y, a_z
+        type(charge_grid),intent(inout)                      :: j_x, j_y, j_z
+        type(charge_grid),intent(inout)                      :: p_charge
+
+        integer                                              :: i,j,k
+
+        if (allocated(p_charge%density)) call deallo_charge(p_charge)
+        p_charge=copy_cube_head(rho_charge)
+        allocate(p_charge%density(size(rho_charge%density,1),     &
+                                  size(rho_charge%density,2),     &
+                                  size(rho_charge%density,3)) )
+
+        p_charge%density=0d0
+
+        forall(i=1:rho_charge%grid(1),j=1:rho_charge%grid(2),k=1:rho_charge%grid(3))  
+            p_charge%density(i,j,k)=t_charge%density(i,j,k)                                          &
+                + ( a_x%density(i,j,k)*j_x%density(i,j,k)                                            &
+                +   a_y%density(i,j,k)*j_y%density(i,j,k)                                            &
+                +   a_z%density(i,j,k)*j_z%density(i,j,k) )*2.d0/3d0/c0                              &
+                + ( a_x%density(i,j,k)*a_x%density(i,j,k)                                            &
+                +   a_x%density(i,j,k)*a_x%density(i,j,k)                                            &
+                +   a_x%density(i,j,k)*a_x%density(i,j,k) )*rho_charge%density(i,j,k)/3.d0/c0**2      
+        end forall
+
+        call d_by_tf(p_charge,rho_charge,1d0,-1d0)
+
+    end SUBROUTINE
+
+
+
+
+    ! this function will modify the value of in_charge
+    SUBROUTINE d_by_tf(in_charge,rho_charge,one,zero_proc)
+        type(charge_grid),intent(inout)                      :: in_charge
+        type(charge_grid),intent(in   )                      :: rho_charge
+        real(dp),intent(in)                                  :: one
+        real(dp),intent(in)                                  :: zero_proc
+
+        real(dp),dimension(:,:,:),allocatable                :: tf
+        real(dp)                                             :: eq_tmp
+        integer                                              :: i,j,k
+
+
+
+        if (allocated(tf)) deallocate(tf)
+        allocate(              tf(size(rho_charge%density,1),     &
+                                  size(rho_charge%density,2),     &
+                                  size(rho_charge%density,3)))
+        tf=tf_charge(rho_charge%density)
+
+        tf=tf*2d0/3d0
+        eq_tmp=1d-6**(5d0/3d0)*3d0/10d0*(3d0*pi**2)**(2d0/3d0)
+        forall(i=1:size(tf,1),j=1:size(tf,2),k=1:size(tf,3),abs(tf(i,j,k))< eq_tmp*2d0/3d0)     &
+            in_charge%density(i,j,k)=0.5d0*(one+zero_proc/sqrt(1d0+zero_proc**2))
+
+        forall(i=1:size(tf,1),j=1:size(tf,2),k=1:size(tf,3),abs(tf(i,j,k))>=eq_tmp*2d0/3d0)     &
+            in_charge%density(i,j,k)=0.5d0*(one+in_charge%density(i,j,k)                        &
+                                    /tf(i,j,k)/sqrt(1d0+(in_charge%density(i,j,k)/tf(i,j,k))**2))
+
+        if (allocated(tf)) deallocate(tf)
+
+
+    end SUBROUTINE
+
+
+
+
+
+    SUBROUTINE calc_vector_square(a_x,a_y,a_z,rho_charge,a2_charge)
+        type(charge_grid),intent(in   )                      :: rho_charge
+        type(charge_grid),intent(inout)                      :: a_x,a_y,a_z
+        type(charge_grid),intent(inout)                      :: a2_charge
+
+        integer                                              :: i,j,k
+
+
+        if (allocated(a2_charge%density)) call deallo_charge(a2_charge)
+        a2_charge=copy_cube_head(rho_charge)
+        allocate(a2_charge%density(size(rho_charge%density,1),     &
+                                   size(rho_charge%density,2),     &
+                                   size(rho_charge%density,3)) )
+
+
+        forall(i=1:rho_charge%grid(1),j=1:rho_charge%grid(2),k=1:rho_charge%grid(3))             &
+            a2_charge%density(i,j,k)=rho_charge%density(i,j,k)                                   &
+                * ( a_x%density(i,j,k)*a_x%density(i,j,k)                                        &
+                +   a_y%density(i,j,k)*a_y%density(i,j,k)                                        &
+                +   a_z%density(i,j,k)*a_z%density(i,j,k) ) / (3d0*c0**2)
+
+!       call d_by_tf(a2_charge,rho_charge,1d0,-1d0)
+
+    end SUBROUTINE
+
+
+
+
+
+    SUBROUTINE calc_vector_potential(mag_field_z,a_x,a_y,a_z,rho_charge)
+        type(charge_grid),intent(inout)                      :: a_x,a_y,a_z
+        type(charge_grid),intent(in   )                      :: rho_charge
+        real(dp),intent(in)                                  :: mag_field_z
+
+        integer                                              :: num_x, num_y, num_z,i,j,k
+        real(dp)                                             :: sx, sy, sz
+        real(dp),dimension(3)                                :: coord
+
+        if (allocated(a_x%density)) call deallo_charge(a_x)
+        if (allocated(a_y%density)) call deallo_charge(a_y)
+        if (allocated(a_z%density)) call deallo_charge(a_z)
+        allocate(a_x%density(size(rho_charge%density,1),     &
+                             size(rho_charge%density,2),     &
+                             size(rho_charge%density,3)) )
+        allocate(a_y%density(size(rho_charge%density,1),     &
+                             size(rho_charge%density,2),     &
+                             size(rho_charge%density,3)) )
+        allocate(a_z%density(size(rho_charge%density,1),     &
+                             size(rho_charge%density,2),     &
+                             size(rho_charge%density,3)) )
+
+        num_x=size(rho_charge%density,1)
+        num_y=size(rho_charge%density,2)
+        num_z=size(rho_charge%density,3)
+        sx=rho_charge%spaces(1,1)
+        sy=rho_charge%spaces(2,2)
+        sz=rho_charge%spaces(3,3)
+
+        write(6,*) 'ok'
+        forall(i=1:num_x,j=1:num_y,k=1:num_z)
+            a_x%density(i,j,k)=(j*sy+rho_charge%origin(2))*mag_field_z*(-1d0)*0.5d0
+            a_y%density(i,j,k)=(i*sx+rho_charge%origin(1))*mag_field_z*( 1d0)*0.5d0
+            a_z%density(i,j,k)=(k*sz+rho_charge%origin(3))*0d0
+        end forall
+
+        write(6,*) 'ik'
+
+    end SUBROUTINE
+
 
 
 
